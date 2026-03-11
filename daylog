@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+
+import os
+import datetime
+import sys
+import subprocess
+import re
+
+# 1. 경로 설정 - Daylog 전용 폴더 및 파일명 사용
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_DIR = os.path.join(BASE_DIR, "Daylog")
+if not os.path.exists(LOG_DIR):
+    os.makedirs(LOG_DIR)
+
+def get_log_file(date_str):
+    """YY-MM-DD 형식에서 월(YY-MM)을 추출해 일기 파일명 생성"""
+    month_prefix = date_str[:5] 
+    return os.path.join(LOG_DIR, f"{month_prefix}_daylog.txt")
+
+def sync_to_gdrive():
+    """Daylog 폴더만 구글 드라이브의 DayLog 폴더로 복사"""
+    print("\n☁️  Syncing to Google Drive (El Momento/DayLog)...")
+    try:
+        subprocess.run(["rclone", "copy", LOG_DIR, "gdrive:El Momento/DayLog"], check=True)
+        print("✅ Cloud backup complete!")
+    except Exception as e:
+        print(f"❌ Cloud sync failed: {e}")
+
+def write_log():
+    print("\n--- 🖊️ Write New/Continue Daylog ---")
+    today = datetime.date.today().strftime("%y-%m-%d")
+    date_input = input(f"Enter date (YY-MM-DD, Default: {today}): ") or today
+    
+    log_file = get_log_file(date_input)
+    date_header = f"[Date: {date_input}]"
+    existing_content = ""
+    
+    # 기존 파일 읽기
+    if os.path.exists(log_file):
+        with open(log_file, "r", encoding="utf-8") as f:
+            existing_content = f.read()
+            if date_header in existing_content:
+                print(f"\n📢 Previous logs for {date_input}:")
+                print("-" * 40)
+                # 기존 내용 표시 로직
+                sections = existing_content.split(date_header)
+                last_entry = sections[-1].split("------------------------------")[0]
+                print(f"PREVIOUS LOGS:{last_entry.rstrip()}")
+                print("-" * 40)
+                print(">>> Adding new details...")
+
+    print("\n[Input mode: Type text and 'SAVE' or Ctrl+D]")
+    lines = []
+    try:
+        while True:
+            line = input("> ")
+            if line.strip().upper() == "SAVE": break
+            lines.append(line)
+    except EOFError: pass
+    
+    new_entry = "\n".join(lines).strip()
+    if not new_entry: return
+
+    timestamp = datetime.datetime.now().strftime('%H:%M:%S')
+    formatted_entry = f"({timestamp}) {new_entry}\n"
+
+    try:
+        if date_header in existing_content:
+            # worklog와 동일한 로직: 헤더 바로 아래에 새 내용 삽입 (최신순 누적)
+            updated_text = existing_content.replace(date_header, f"{date_header}\n{formatted_entry}", 1)
+            with open(log_file, "w", encoding="utf-8") as f:
+                f.write(updated_text)
+        else:
+            # 새로운 날짜 섹션 추가
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"\n{date_header}\n{formatted_entry}{'-'*30}\n")
+        
+        print(f"\n✅ Log saved to {os.path.basename(log_file)}")
+        sync_to_gdrive()
+    except Exception as e:
+        print(f"❌ Save Error: {e}")
+
+def search_logs():
+    query = input("\nEnter keyword or #tag to search: ").lower()
+    found = False
+    print(f"\n--- Searching for '{query}' ---")
+    
+    if not os.path.exists(LOG_DIR): return
+
+    for file in sorted(os.listdir(LOG_DIR)):
+        if file.endswith("_daylog.txt"): # daylog 파일만 검색
+            with open(os.path.join(LOG_DIR, file), "r", encoding="utf-8") as f:
+                content = f.read()
+                entries = content.split("-" * 30)
+                for entry in entries:
+                    if query in entry.lower():
+                        print(entry.strip())
+                        print("-" * 30)
+                        found = True
+    if not found: print("No matching logs found.")
+
+def manage_logs():
+    date_to_find = input("\nEnter date to Edit/Delete (YY-MM-DD): ")
+    log_file = get_log_file(date_to_find)
+    if not os.path.exists(log_file):
+        print("File not found.")
+        return
+
+    with open(log_file, "r", encoding="utf-8") as f:
+        content = f.read()
+    
+    date_header = f"[Date: {date_to_find}]"
+    if date_header not in content:
+        print("No entry found for this date.")
+        return
+
+    action = input("\n1. Edit (Overwrite)  2. Delete  3. Cancel: ")
+    pattern = re.escape(date_header) + r"(.*?)" + r"------------------------------"
+    
+    if action == '1':
+        print(f"\n[Enter NEW content for {date_to_find}. 'SAVE' to finish]")
+        new_lines = []
+        try:
+            while True:
+                line = input("> ")
+                if line.strip().upper() == "SAVE": break
+                new_lines.append(line)
+        except EOFError: pass
+        
+        new_section = f"{date_header}\n(Edited at {datetime.datetime.now().strftime('%H:%M:%S')})\n" + "\n".join(new_lines) + "\n"
+        updated_content = re.sub(pattern, new_section, content, flags=re.DOTALL)
+        with open(log_file, "w", encoding="utf-8") as f: f.write(updated_content)
+        print("✅ Edited successfully!")
+        sync_to_gdrive()
+        
+    elif action == '2':
+        confirm = input(f"Are you sure to delete {date_to_find}? (y/n): ")
+        if confirm.lower() == 'y':
+            updated_content = re.sub(pattern, "", content, flags=re.DOTALL, count=1)
+            with open(log_file, "w", encoding="utf-8") as f: f.write(updated_content.strip() + "\n")
+            print("✅ Deleted successfully!")
+            sync_to_gdrive()
+
+if __name__ == "__main__":
+    while True:
+        print("\n" + "="*35 + "\n   CLI MASTER DAYLOG SYSTEM\n" + "="*35)
+        print("1. Write Log      2. View All")
+        print("3. Search (Tag)   4. Edit/Delete")
+        print("5. Exit")
+        
+        try:
+            choice = input("\nOption: ").strip()
+            if choice == '1': write_log()
+            elif choice == '2':
+                files = [f for f in os.listdir(LOG_DIR) if f.endswith("_daylog.txt")]
+                if not files: print("No logs found.")
+                for file in sorted(files):
+                    print(f"\n--- File: {file} ---")
+                    with open(os.path.join(LOG_DIR, file), "r") as f: print(f.read())
+            elif choice == '3': search_logs()
+            elif choice == '4': manage_logs()
+            elif choice == '5': 
+                print("Exiting. Goodbye!")
+                break
+        except EOFError: break
